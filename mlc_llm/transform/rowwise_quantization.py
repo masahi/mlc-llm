@@ -189,12 +189,8 @@ class RowWiseQuantize:
                     primfunc_name_hint="encode",
                 )
 
-                # HACK
-                if transpose:
-                    packed_weight = self.builder_.normalize(encoded_data[0])
-                    encoded_weight = relax.call_pure_packed("cutlass.ft_preprocess_weight_int4", packed_weight, 80, sinfo_args=packed_weight.struct_info)
-                else:
-                    encoded_weight = encoded_data[0]
+                packed_weight = self.builder_.normalize(encoded_data[0])
+                encoded_weight = relax.call_pure_packed("cutlass.ft_preprocess_weight_int4", packed_weight, 80, sinfo_args=packed_weight.struct_info)
 
                 decode_args = []
                 decode_args.append(
@@ -209,16 +205,11 @@ class RowWiseQuantize:
 
             def quantize_matmul(self, call: relax.Call):
                 call_arg = self.lookup_binding(call.args[1])
-                if call_arg.op == tvm.ir.Op.get("relax.permute_dims"):
-                    if (
-                        call_arg.attrs.axes is not None
-                        or call_arg.args[0].struct_info.ndim != 2
-                        # or call_arg.args[0] not in self._params
-                        or call.struct_info.dtype == "float32"
-                    ):
-                        return call
+                if call.struct_info.dtype == "float32":
+                    return call
 
-                    decode_args = self.emit_encoding(call_arg.args[0], transpose=True)
+                def emit(weight):
+                    decode_args = self.emit_encoding(weight, transpose=True)
 
                     quantized_permute_dims = self.builder_.call_te(
                         decoding_func(
@@ -234,6 +225,20 @@ class RowWiseQuantize:
                         quantized_permute_dims,
                         out_dtype=call.attrs.out_dtype,
                     )
+
+                if call_arg.op == tvm.ir.Op.get("relax.permute_dims"):
+                    if call_arg.attrs.axes is not None or call_arg.args[0].struct_info.ndim != 2:
+                        return call
+
+                    return emit(call_arg.args[0])
+
+                if call_arg.op == tvm.ir.Op.get("relax.concat"):
+                    if call_arg.attrs.axis != 1 or call_arg.struct_info.ndim != 2:
+                        return call
+
+                    encode_arg = self.builder_.normalize(relax.op.permute_dims(call_arg))
+                    return emit(encode_arg)
+
                 return call
 
             def emit_groupwise_encoding(self, x: relax.Expr) -> List[relax.Expr]:

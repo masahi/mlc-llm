@@ -13,7 +13,7 @@ import mlc_llm
 from mlc_llm import utils
 from mlc_llm.relax_model import gpt_neox, llama, moss, rwkv
 from tvm.relax.backend.contrib.cutlass import partition_for_cutlass
-from mlc_llm.transform import combine_parallel_transposed_matmul, fuse_split_rotary_embedding, rewrite_attention
+from mlc_llm.transform import fuse_split_rotary_embedding, rewrite_attention
 
 
 def _parse_args():
@@ -287,12 +287,7 @@ def mod_transform_before_build(
 
     use_cutlass = True
 
-
-    mod["prefill"] = combine_parallel_transposed_matmul(mod["prefill"], 3)
-    mod["prefill"] = combine_parallel_transposed_matmul(mod["prefill"], 2)
-    mod["decode"] = combine_parallel_transposed_matmul(mod["decode"], 3)
-    mod["decode"] = combine_parallel_transposed_matmul(mod["decode"], 2)
-
+    mod = relax.transform.CombineParallelMatmul()(mod)
     mod = fuse_split_rotary_embedding(mod)
 
     if use_cutlass:

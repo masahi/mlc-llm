@@ -5,6 +5,5 @@ from .reorder_transform_func import ReorderTransformFunc
 from .rowwise_quantization import RowWiseQuantize
 from .rwkv_quantization import RWKVQuantize
 from .transpose_matmul import FuseTransposeMatmul
-from .combine_parallel_matmul import combine_parallel_transposed_matmul
 from .rewrite_attention import rewrite_attention
 from .fuse_split_rotary_embedding import fuse_split_rotary_embedding
