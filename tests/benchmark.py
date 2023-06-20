@@ -90,7 +90,7 @@ class ModelWrapper:
     # This function forces device sync
     def sync(self):
         assert 0, "Not intended to call directly"
-    
+
     # This prepares model for benchmarking.
     # One of its important jobs is to clear kv cache.
     def prep_model(self):
@@ -98,13 +98,13 @@ class ModelWrapper:
 
     # This function implements the core of the pipeline for benchmarking.
     # This excludes the interaction with tokenizer (e.g., text->token, token->text)
-    # Currently, sampling is implemented as greedy and you can also skip this by 
+    # Currently, sampling is implemented as greedy and you can also skip this by
     # using `skip_sampling`.
     def benchmark_core(self, num_input_tokens, num_output_tokens, skip_sampling=False):
         assert 0, "Not intended to call directly"
 
-    # This function is for e2e pipeline. Currently, mainly used for the sanity check 
-    # of the output texts. 
+    # This function is for e2e pipeline. Currently, mainly used for the sanity check
+    # of the output texts.
     def generate(
         self,
         prompt: str,
@@ -164,18 +164,14 @@ class TvmModelWrapper(ModelWrapper):
         )
 
         start_pos = num_input_tokens
+        next_token = None
+
         for cur_pos in range(start_pos, total_len):
             if cur_pos == start_pos:
-                # TODO: switch to the below when Eric's PR is merged.
                 tok = tvm.nd.from_dlpack(tokens[:, :cur_pos])
-                #tok = tvm.nd.array(tokens[:, :cur_pos].numpy(), self.tvm_device)
                 logits = self.model(tok)
             else:
-                # TODO: switch to the below when Eric's PR is merged.
-                tok = tvm.nd.from_dlpack(tokens[:, cur_pos - 1 : cur_pos])
-                #tok = tvm.nd.array(
-                #    tokens[:, cur_pos - 1 : cur_pos].numpy(), self.tvm_device
-                #)
+                tok = tvm.nd.from_dlpack(next_token)
                 logits = self.model(tok)
 
             # NOTE:
@@ -203,10 +199,8 @@ class TvmModelWrapper(ModelWrapper):
 
             logits = logits[:, -1, :]
             # Use greedy
-            next_token = torch.argmax(logits, dim=-1)
-            next_token = next_token.reshape(-1)
-            tokens[:, cur_pos] = next_token
-            
+            next_token = torch.argmax(logits, dim=-1, keepdim=True).to(torch.int32)
+
 
     def generate(
         self,
@@ -396,7 +390,7 @@ class TorchModelWrapper(ModelWrapper):
                 break
 
 class LlamaCppModelWrapper(ModelWrapper):
-    
+
     name: str = "llama_cpp_model_wrapper"  # name of the model wrapper
     ggml_file_path: str  # path to the ggml model binary path
     model: "Llama"  # llama model object
