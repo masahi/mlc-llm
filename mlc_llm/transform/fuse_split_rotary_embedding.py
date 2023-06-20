@@ -27,15 +27,22 @@ def split_rotary(
     for ax0, ax1, ax2 in T.grid(T.int64(1), T.int64(1), T.int64(4096)):
         with T.block("T_split"):
             v_ax0, v_ax1, v_ax2 = T.axis.remap("SSS", [ax0, ax1, ax2])
-            T.reads(A[v_ax0, v_ax1, v_ax2], A[v_ax0, v_ax1, v_ax2 + T.int64(4096)], A[v_ax0, v_ax1, v_ax2 + T.int64(8192)])
-            T.writes(T_split[v_ax0, v_ax1, v_ax2], T_split_1[v_ax0, v_ax1, v_ax2], T_split_2[v_ax0, v_ax1, v_ax2])
+            T.reads(
+                A[v_ax0, v_ax1, v_ax2],
+                A[v_ax0, v_ax1, v_ax2 + T.int64(4096)],
+                A[v_ax0, v_ax1, v_ax2 + T.int64(8192)],
+            )
+            T.writes(
+                T_split[v_ax0, v_ax1, v_ax2],
+                T_split_1[v_ax0, v_ax1, v_ax2],
+                T_split_2[v_ax0, v_ax1, v_ax2],
+            )
             T_split[v_ax0, v_ax1, v_ax2] = cos[n - T.int64(1), v_ax2 % 128] * A[
                 v_ax0, v_ax1, v_ax2
             ] + sin[n - T.int64(1), v_ax2 % 128] * T.Select(
                 T.int64(64) <= v_ax2 % 128,
                 A[v_ax0, v_ax1, v_ax2 - T.int64(64)],
-                A[v_ax0, v_ax1, v_ax2 + T.int64(64)]
-                * T.float16(-1),
+                A[v_ax0, v_ax1, v_ax2 + T.int64(64)] * T.float16(-1),
             )
             T_split_1[v_ax0, v_ax1, v_ax2] = cos[n - T.int64(1), v_ax2 % 128] * A[
                 v_ax0, v_ax1, v_ax2 + T.int64(4096)
@@ -59,7 +66,9 @@ def split_rotary(
 def fuse_split_rotary_embedding(mod):
     mod["split_rotary"] = split_rotary
     gvar = mod.get_global_var("split_rotary")
-    relax.expr._update_struct_info(gvar, mod.get_global_var("rotary_embedding1").struct_info)
+    relax.expr._update_struct_info(
+        gvar, mod.get_global_var("rotary_embedding1").struct_info
+    )
 
     with PatternContext() as ctx:
         # lv3: R.Tuple(R.Tensor((1, 1, 4096), dtype="float16"), R.Tensor((1, 1, 4096), dtype="float16"), R.Tensor((1, 1, 4096), dtype="float16")) = R.split(lv2, indices_or_sections=[4096, 8192], axis=2)
@@ -80,13 +89,19 @@ def fuse_split_rotary_embedding(mod):
 
         lv3 = is_op("relax.split")(inp_pat)
         lv1521 = is_tuple_get_item(lv3, 0)
-        lv1522 = is_op("relax.reshape")(lv1521, is_shape([1, 1, 32, 128]), add_constraint=False)
+        lv1522 = is_op("relax.reshape")(
+            lv1521, is_shape([1, 1, 32, 128]), add_constraint=False
+        )
         lv1521.used_by(lv1522)
         lv1524 = is_tuple_get_item(lv3, 1)
-        lv1525 = is_op("relax.reshape")(lv1524, is_shape([1, 1, 32, 128]), add_constraint=False)
+        lv1525 = is_op("relax.reshape")(
+            lv1524, is_shape([1, 1, 32, 128]), add_constraint=False
+        )
         lv1524.used_by(lv1525)
         lv1527 = is_tuple_get_item(lv3, 2)
-        V = is_op("relax.reshape")(lv1527, is_shape([1, 1, 32, 128]), add_constraint=False)
+        V = is_op("relax.reshape")(
+            lv1527, is_shape([1, 1, 32, 128]), add_constraint=False
+        )
         lv1527.used_by(V)
 
         Q = is_op("relax.call_tir")(
