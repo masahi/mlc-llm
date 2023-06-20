@@ -80,11 +80,15 @@ def fuse_split_rotary_embedding(mod):
 
         lv3 = is_op("relax.split")(inp_pat)
         lv1521 = is_tuple_get_item(lv3, 0)
-        lv1522 = is_op("relax.reshape")(lv1521, is_shape([1, 1, 32, 128]))
+        lv1522 = is_op("relax.reshape")(lv1521, is_shape([1, 1, 32, 128]), add_constraint=False)
+        lv1521.used_by(lv1522)
         lv1524 = is_tuple_get_item(lv3, 1)
-        lv1525 = is_op("relax.reshape")(lv1524, is_shape([1, 1, 32, 128]))
+        lv1525 = is_op("relax.reshape")(lv1524, is_shape([1, 1, 32, 128]), add_constraint=False)
+        lv1524.used_by(lv1525)
         lv1527 = is_tuple_get_item(lv3, 2)
-        V = is_op("relax.reshape")(lv1527, is_shape([1, 1, 32, 128]))
+        V = is_op("relax.reshape")(lv1527, is_shape([1, 1, 32, 128]), add_constraint=False)
+        lv1527.used_by(V)
+
         Q = is_op("relax.call_tir")(
             GlobalVarPattern(),
             TuplePattern([lv1522, cos_cached, sin_cached]),
