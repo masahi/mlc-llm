@@ -176,7 +176,6 @@ def fuse_split_rotary_embedding(mod, num_layers):
         sin_cached.used_by(Q)
 
     def rewriter(matchings, bindings):
-        print("matched")
         inp = matchings[inp_pat]
         cos = matchings[cos_cached]
         sin = matchings[sin_cached]

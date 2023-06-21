@@ -386,7 +386,7 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
                         work_dir=work_dir,
                         max_trials_global=2000,
                         max_trials_per_task=50,
-                        op_names=["rms_norm1", "silu", "reshape2", "softmax"]
+                        op_names=["rms_norm1", "silu", "reshape2", "reshape7", "softmax"]
                     )
                 )
             passes.append(relax.transform.MetaScheduleApplyDatabase(work_dir))
