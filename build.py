@@ -266,6 +266,7 @@ def mod_transform_before_build(
     mod: tvm.IRModule,
     model_params: List[Optional[tvm.nd.NDArray]],
     args: argparse.Namespace,
+    config,
 ) -> tvm.IRModule:
     """First-stage: Legalize ops and trace"""
     if ARGS.model.startswith("rwkv-"):
@@ -288,7 +289,7 @@ def mod_transform_before_build(
     use_cutlass = True
 
     mod = relax.transform.CombineParallelMatmul()(mod)
-    mod = fuse_split_rotary_embedding(mod)
+    mod = fuse_split_rotary_embedding(mod, config["num_hidden_layers"])
 
     if use_cutlass:
         mod["prefill"] = rewrite_attention(mod["prefill"])
@@ -434,7 +435,7 @@ def main():
                 mod, params = rwkv.get_model(ARGS, config)
             else:
                 raise ValueError(f"Model {ARGS.model} not supported")
-            mod = mod_transform_before_build(mod, params, ARGS)
+            mod = mod_transform_before_build(mod, params, ARGS, config)
             # print(mod.without_attr("external_mods").without_attr("const_name_to_constant"))
 
             with open(cache_path, "wb") as outfile:
