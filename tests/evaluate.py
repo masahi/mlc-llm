@@ -61,7 +61,7 @@ class LibCompare(LibCompareVMInstrument):
         if name.startswith("shape_func"):
             return
         if name not in self.time_eval_results:
-            super().compare(name, ref_args, new_args, ret_indices)
+            # super().compare(name, ref_args, new_args, ret_indices)
             res = self.mod.time_evaluator(name, dev=self.device)(*new_args).mean
             self.time_eval_results[name] = (res, 1)
         else:
@@ -133,13 +133,12 @@ def deploy_to_pipeline(args) -> None:
     )
     device.sync()
     end = time.time()
-    fcache_view = tvm.get_global_func("vm.builtin.attention_kv_cache_view")
+    # fcache_view = tvm.get_global_func("vm.builtin.attention_kv_cache_view")
+    # first_k_cache = fcache_view(kv_caches[0], ShapeTuple([1, seqlen+1, 32, 128]))
+    # if args.debug_dump:
+    #     print(f"output kv_cache[0]:\n{first_k_cache.numpy().transpose(1, 0, 2)}")
+    #     print(f"output logits:\n{logits.numpy()}")
 
-    num_hidden_layers = 40 if "13b" in args.model else 32
-    first_k_cache = fcache_view(kv_caches[0], ShapeTuple([seqlen+1, num_hidden_layers, 128]))
-    if args.debug_dump:
-        print(f"output kv_cache[0]:\n{first_k_cache.numpy().transpose(1, 0, 2)}")
-        print(f"output logits:\n{logits.numpy()}")
     print(
         f"Time elapsed: encoding {(encoding_end - start)} seconds, decoding {end - encoding_end} secs"
     )
