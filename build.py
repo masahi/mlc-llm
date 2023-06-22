@@ -402,7 +402,7 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
 
     debug_dump_script(mod_deploy, "mod_build_stage.py", args)
 
-    with tvm.transform.PassContext(config={"relax.backend.use_cuda_graph": True}):
+    with tvm.transform.PassContext(config={"relax.backend.use_cuda_graph": False}):
         ex = relax.build(mod_deploy, args.target, system_lib=args.system_lib)
 
     output_filename = (
