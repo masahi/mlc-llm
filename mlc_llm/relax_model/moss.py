@@ -221,19 +221,19 @@ class MossAttention(nn.Module):
             k = nn.emit(
                 relax.Call(
                     f_kv_cache_view,
-                    args=[k_cache, kv_states_shape],
-                    sinfo_args=[R.Tensor(kv_states_shape, k.struct_info.dtype)],
+                    args=[k_cache, kv_cache_shape],
+                    sinfo_args=[R.Tensor(kv_cache_shape, k.struct_info.dtype)],
                 )
             )
             v = nn.emit(
                 relax.Call(
                     f_kv_cache_view,
-                    args=[v_cache, kv_states_shape],
-                    sinfo_args=[R.Tensor(kv_states_shape, v.struct_info.dtype)],
+                    args=[v_cache, kv_cache_shape],
+                    sinfo_args=[R.Tensor(kv_cache_shape, v.struct_info.dtype)],
                 )
             )
-            # k = nn.emit(reshape(k, kv_states_shape))
-            # v = nn.emit(reshape(v, kv_states_shape))
+            k = nn.emit(reshape(k, kv_states_shape))
+            v = nn.emit(reshape(v, kv_states_shape))
             past_key_value = (k_cache, v_cache)
         else:
             past_key_value = (None, None)

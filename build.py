@@ -289,7 +289,7 @@ def mod_transform_before_build(
     use_cutlass = True
 
     mod = relax.transform.CombineParallelMatmul()(mod)
-    mod = fuse_split_rotary_embedding(mod, config["num_hidden_layers"])
+    # mod = fuse_split_rotary_embedding(mod, config["num_hidden_layers"])
 
     if use_cutlass:
         mod["prefill"] = rewrite_attention(mod["prefill"])
