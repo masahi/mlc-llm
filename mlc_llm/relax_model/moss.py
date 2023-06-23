@@ -251,16 +251,17 @@ class MossAttention(nn.Module):
             )
         )
         # Apply attention mask
-        attn_weights = nn.emit(attn_weights + attention_mask)
         attn_weights = nn.emit(
-            minimum(
-                maximum(
-                    attn_weights,
-                    _min_value(attn_weights.struct_info.dtype),
+            maximum(
+                attn_weights,
+                relax.const(
+                    tvm.tir.min_value(attn_weights.struct_info.dtype).value,
+                    attn_weights.struct_info.dtype,
                 ),
-                _max_value(attn_weights.struct_info.dtype),
             )
         )
+        attn_weights = nn.emit(relax.op.minimum(attn_weights, attention_mask))
+
         # Calculate Softmax(QK)
         if attn_weights.struct_info.dtype != "float32":
             attn_weights = astype(attn_weights, "float32")
@@ -604,7 +605,7 @@ def adapt_hf_config(hf_config):
     # increase vocab_size to multiple of 64
     hf_config["vocab_size"] = ((hf_config["vocab_size"] + 63) // 64) * 64
     return hf_config
-    
+
 
 def get_model(args, hf_config):
     from transformers import AutoModelForCausalLM  # type: ignore[import]
@@ -633,7 +634,7 @@ def get_model(args, hf_config):
             param = np.pad(param, ((0, config.vocab_size - param.shape[0]), (0,0)), mode='constant')
         if "lm_head.bias" in name:
             param = np.pad(param, ((0, config.vocab_size - param.shape[0]),), mode='constant')
-        
+
         if "ln_1" in name or "ln_f" in name:
             param = param.astype("float32")
         else:

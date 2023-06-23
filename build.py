@@ -290,7 +290,8 @@ def mod_transform_before_build(
 
     mod = relax.transform.CanonicalizeBindings()(mod)
     mod = relax.transform.CombineParallelMatmul()(mod)
-    # mod = fuse_split_rotary_embedding(mod, config["num_hidden_layers"])
+
+    mod = fuse_split_rotary_embedding(mod, config["num_hidden_layers"])
 
     if use_cutlass:
         mod["prefill"] = rewrite_attention(mod["prefill"])
@@ -439,6 +440,7 @@ def main():
             else:
                 raise ValueError(f"Model {ARGS.model} not supported")
             mod = mod_transform_before_build(mod, params, ARGS, config)
+            # print(mod.without_attr("external_mods").without_attr("const_name_to_constant"))
 
             with open(cache_path, "wb") as outfile:
                 pickle.dump(mod, outfile)

@@ -114,7 +114,12 @@ def split_rotary_13b(
 
 
 def fuse_split_rotary_embedding(mod, num_layers):
-    mod["split_rotary"] = {32: split_rotary_7b, 40: split_rotary_13b}[num_layers]
+    func_map = {32: split_rotary_7b, 40: split_rotary_13b}
+
+    if num_layers not in func_map:
+        return mod
+
+    mod["split_rotary"] = func_map[num_layers]
     gvar = mod.get_global_var("split_rotary")
     relax.expr._update_struct_info(
         gvar, mod.get_global_var("rotary_embedding1").struct_info
