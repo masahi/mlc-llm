@@ -12,6 +12,8 @@ from tvm import relax
 import mlc_llm
 from mlc_llm import utils
 from mlc_llm.relax_model import gpt_bigcode, gpt_neox, llama, minigpt, gptj, rwkv
+from tvm.relax.backend.contrib.cutlass import partition_for_cutlass
+from mlc_llm.transform import fuse_split_rotary_embedding, rewrite_attention
 
 
 def _parse_args():
@@ -275,6 +277,7 @@ def mod_transform_before_build(
     mod: tvm.IRModule,
     model_params: List[Optional[tvm.nd.NDArray]],
     args: argparse.Namespace,
+    config,
 ) -> tvm.IRModule:
     """First-stage: Legalize ops and trace"""
     if ARGS.model.startswith("rwkv-"):
@@ -301,27 +304,47 @@ def mod_transform_before_build(
     # Reassign `args.quantization` for compatibility of the old/new quantization framework.
     # This will be cleaned after all model architecture transitioning to the new framework.
     args.quantization = utils.quantization_dict[args.quantization.name]
-    if args.quantization.mode != "no":
-        if ARGS.model.startswith("rwkv-"):
-            mod = mlc_llm.transform.RWKVQuantize(  # pylint: disable=not-callable
-                mode=args.quantization.mode,
-                dtype=args.quantization.model_dtype,
-            )(mod)
-        else:
-            mod = mlc_llm.transform.GroupQuantize(  # pylint: disable=not-callable
-                group_size=40 if args.quantization.mode.endswith("3") else 32,
-                sym=args.quantization.sym,
-                mode=args.quantization.mode,
-                storage_nbit=args.quantization.storage_nbit,
-                dtype=args.quantization.model_dtype,
-            )(mod)
-    mod = mlc_llm.transform.FuseDecodeTranspose()(mod)  # pylint: disable=not-callable
-    mod = mlc_llm.transform.FuseTransposeMatmul()(mod)  # pylint: disable=not-callable
-    mod = relax.pipeline.get_pipeline()(mod)  # pylint: disable=no-value-for-parameter
-    mod = mlc_llm.transform.FuseDecodeMatmulEwise(  # pylint: disable=not-callable
-        args.quantization.name, args.target_kind
-    )(mod)
-    mod = mlc_llm.transform.FuseDecodeTake()(mod)
+
+    use_cutlass = True
+
+    mod = relax.transform.CombineParallelMatmul()(mod)
+    mod = fuse_split_rotary_embedding(mod, config["num_hidden_layers"])
+
+    if use_cutlass:
+        mod["prefill"] = rewrite_attention(mod["prefill"])
+        mod["decode"] = rewrite_attention(mod["decode"])
+        mod = mlc_llm.transform.RowWiseQuantize("float32")(mod)
+    else:
+        if args.quantization.mode != "no":
+            if ARGS.model.startswith("rwkv-"):
+                mod = mlc_llm.transform.RWKVQuantize(  # pylint: disable=not-callable
+                    mode=args.quantization.mode,
+                    dtype=args.quantization.model_dtype,
+                )(mod)
+            else:
+                mod = mlc_llm.transform.GroupQuantize(  # pylint: disable=not-callable
+                    group_size=40 if args.quantization.mode.endswith("3") else 32,
+                    sym=args.quantization.sym,
+                    mode=args.quantization.mode,
+                    storage_nbit=args.quantization.storage_nbit,
+                    dtype=args.quantization.model_dtype,
+                )(mod)
+
+        mod = mlc_llm.transform.FuseDecodeTranspose()(mod)  # pylint: disable=not-callable
+        mod = mlc_llm.transform.FuseTransposeMatmul()(mod)  # pylint: disable=not-callable
+
+    if use_cutlass:
+        mod = partition_for_cutlass(mod)
+        mod = relax.transform.RunCodegen(
+            {"cutlass": {"sm": 80, "find_first_valid": False}},
+            entry_functions=model_names
+        )(mod)
+    else:
+        mod = mlc_llm.transform.FuseDecodeMatmulEwise(  # pylint: disable=not-callable
+            args.quantization.name, args.target_kind
+        )(mod)
+        mod = mlc_llm.transform.FuseDecodeTake()(mod)
+
     # Apply DCE differently for compatibility of the old/new quantization framework.
     # This will be cleaned after all model architecture transitioning to the new framework.
     if "transform_params" in [gv.name_hint for gv in mod.functions]:
@@ -330,7 +353,11 @@ def mod_transform_before_build(
         )
     else:
         mod = relax.transform.DeadCodeElimination(model_names)(mod)
+
     mod = mlc_llm.transform.CleanUpTIRAttrs()(mod)
+
+    mod = relax.pipeline.get_pipeline()(mod)  # pylint: disable=no-value-for-# parameter
+
     mod = relax.transform.LiftTransformParams()(mod)
     mod_transform, mod_deploy = utils.split_transform_deploy_mod(mod, model_names)
 
@@ -380,21 +407,38 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
 
     debug_dump_script(mod_deploy, "mod_before_build.py", args)
     if target_kind != "cpu":
-        db = utils.get_database(args.db_path)  # pylint: disable=invalid-name
-        with db, tvm.target.Target("apple/m1-gpu-restricted"):
-            if args.target_kind == "android":
-                mod_deploy = mlc_llm.dispatch.DispatchTIROperatorAdreno()(  # pylint: disable=not-callable
-                    mod_deploy
+        # db = utils.get_database(args.db_path)  # pylint: disable=invalid-name
+        # with db, tvm.target.Target("apple/m1-gpu-restricted"):
+        #     if args.target_kind == "android":
+        #         mod_deploy = mlc_llm.dispatch.DispatchTIROperatorAdreno()(  # pylint: disable=not-callable
+        #             mod_deploy
+        #         )
+        #     mod_deploy = relax.transform.MetaScheduleApplyDatabase()(mod_deploy)
+        #     mod_deploy = (
+        #         mlc_llm.dispatch.DispatchTIROperator(  # pylint: disable=not-callable
+        #             args.model_category
+        #         )(mod_deploy)
+        #     )
+        work_dir = "work"
+        passes = []
+
+        with tvm.target.Target("nvidia/geforce-rtx-3070"), tvm.transform.PassContext(opt_level=3):
+            if False:
+                passes.append(
+                    relax.transform.MetaScheduleTuneIRMod(
+                        params={},
+                        work_dir=work_dir,
+                        max_trials_global=2000,
+                        max_trials_per_task=50,
+                        op_names=["rms_norm1", "silu", "reshape2", "reshape7", "softmax"]
+                    )
                 )
-            mod_deploy = relax.transform.MetaScheduleApplyDatabase()(mod_deploy)
-            mod_deploy = (
-                mlc_llm.dispatch.DispatchTIROperator(  # pylint: disable=not-callable
-                    args.model_category
-                )(mod_deploy)
-            )
-            mod_deploy = tvm.tir.transform.DefaultGPUSchedule()(mod_deploy)
-            mod_deploy = mlc_llm.transform.LiftTIRGlobalBufferAlloc()(mod_deploy)
-            mod_deploy = tvm.tir.transform.ForceNarrowIndexToInt32()(mod_deploy)
+            passes.append(relax.transform.MetaScheduleApplyDatabase(work_dir))
+            passes.append(tvm.tir.transform.DefaultGPUSchedule())
+            passes.append(mlc_llm.transform.LiftTIRGlobalBufferAlloc())
+            passes.append(tvm.tir.transform.ForceNarrowIndexToInt32())
+
+            mod_deploy = tvm.transform.Sequential(passes)(mod_deploy)
 
     if args.debug_load_script:
         mod_deploy = debug_load_script("mod_build_stage_debug.py", args)
@@ -445,6 +489,7 @@ def main():
         else:
             raise ValueError(f"Model {ARGS.model} not supported")
         mod = mod_transform_before_build(mod, params, ARGS)
+        # print(mod.without_attr("external_mods").without_attr("const_name_to_constant"))
         with open(cache_path, "wb") as outfile:
             pickle.dump(mod, outfile)
         print(f"Save a cached module to {cache_path}.")

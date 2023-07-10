@@ -446,6 +446,12 @@ void Chat(ChatModule* chat, const std::filesystem::path& artifact_path,
   PrintSpecialCommands();
   chat->Reload(model);
   chat->ProcessSystemPrompts();
+
+  auto input = "Write a poem about Pittsburgh.";
+  Converse(chat, input, stream_interval, std::cout);
+  std::cout << chat->RuntimeStatsText() << std::endl << std::flush;
+  return;
+
   while (true) {
     std::string input;
     std::cout << chat->GetRole0() << ": " << std::flush;

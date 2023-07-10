@@ -62,6 +62,10 @@ tvm_file_glob(GLOB_RECURSE MLC_LLM_SRCS cpp/*.cc)
 tvm_file_glob(GLOB_RECURSE MLC_CLI_SRCS cpp/cli_main.cc)
 list(REMOVE_ITEM MLC_LLM_SRCS ${MLC_CLI_SRCS})
 
+if (USE_CUDA AND USE_CUTLASS)
+  link_directories($ENV{TVM_HOME}/build/3rdparty/cutlass_fpA_intB_gemm/cutlass_kernels)
+endif()
+
 add_library(mlc_llm_objs OBJECT ${MLC_LLM_SRCS})
 add_library(mlc_cli_objs OBJECT ${MLC_CLI_SRCS})
 
@@ -85,7 +89,7 @@ add_library(mlc_llm_static STATIC $<TARGET_OBJECTS:mlc_llm_objs>)
 add_dependencies(mlc_llm_static tokenizers_cpp sentencepiece-static tokenizers_c tvm_runtime)
 set_target_properties(mlc_llm_static PROPERTIES OUTPUT_NAME mlc_llm)
 
-target_link_libraries(mlc_llm PUBLIC tvm_runtime)
+target_link_libraries(mlc_llm PUBLIC tvm_runtime -Wl,--no-as-needed fpA_intB_gemm)
 target_link_libraries(mlc_llm PRIVATE tokenizers_cpp)
 
 if (BUILD_CPP_TEST)
