@@ -314,6 +314,14 @@ def mod_transform_before_build(
         mod["prefill"] = rewrite_attention(mod["prefill"])
         mod["decode"] = rewrite_attention(mod["decode"])
         mod = mlc_llm.transform.RowWiseQuantize("float32")(mod)
+
+        mod = partition_for_cutlass(mod)
+        mod = relax.transform.RunCodegen(
+            {"cutlass": {"sm": 80, "find_first_valid": False}},
+            entry_functions=model_names + ["transform_params"]
+        )(mod)
+        # print(mod.without_attr("external_mods").without_attr("const_name_to_constant"))
+        mod = relax.pipeline.get_pipeline()(mod)  # pylint: disable=no-value-for-# parameter
     else:
         if args.quantization.mode != "no":
             if ARGS.model.startswith("rwkv-"):
@@ -332,14 +340,7 @@ def mod_transform_before_build(
 
         mod = mlc_llm.transform.FuseDecodeTranspose()(mod)  # pylint: disable=not-callable
         mod = mlc_llm.transform.FuseTransposeMatmul()(mod)  # pylint: disable=not-callable
-
-    if use_cutlass:
-        mod = partition_for_cutlass(mod)
-        mod = relax.transform.RunCodegen(
-            {"cutlass": {"sm": 80, "find_first_valid": False}},
-            entry_functions=model_names
-        )(mod)
-    else:
+        mod = relax.pipeline.get_pipeline()(mod)  # pylint: disable=no-value-for-# parameter
         mod = mlc_llm.transform.FuseDecodeMatmulEwise(  # pylint: disable=not-callable
             args.quantization.name, args.target_kind
         )(mod)
@@ -355,8 +356,6 @@ def mod_transform_before_build(
         mod = relax.transform.DeadCodeElimination(model_names)(mod)
 
     mod = mlc_llm.transform.CleanUpTIRAttrs()(mod)
-
-    mod = relax.pipeline.get_pipeline()(mod)  # pylint: disable=no-value-for-# parameter
 
     mod = relax.transform.LiftTransformParams()(mod)
     mod_transform, mod_deploy = utils.split_transform_deploy_mod(mod, model_names)
@@ -488,7 +487,7 @@ def main():
             mod, params = rwkv.get_model(ARGS, config)
         else:
             raise ValueError(f"Model {ARGS.model} not supported")
-        mod = mod_transform_before_build(mod, params, ARGS)
+        mod = mod_transform_before_build(mod, params, ARGS, config)
         # print(mod.without_attr("external_mods").without_attr("const_name_to_constant"))
         with open(cache_path, "wb") as outfile:
             pickle.dump(mod, outfile)
