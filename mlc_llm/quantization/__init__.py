@@ -2,6 +2,7 @@ from .quantization import FQuantize, FDequantize
 from .quantization import QuantizationScheme
 from .quantization import QuantizationSpec, NoQuantizationSpec, ParamQuantKind
 from .group_quantization import GroupQuantizationSpec
+from .rowwise_quantization import RowwiseQuantizationSpec
 
 
 # The predefined quantization schemes.
@@ -75,6 +76,21 @@ quantization_schemes = {
             dtype="float32",
             mode="int4",
             sym=False,
+            storage_nbit=32,
+            group_size=32,
+            transpose=False,
+        ),
+        final_fc_weight="same_as_linear_weight",
+    ),
+    "q4f16_ft": QuantizationScheme(
+        name="q4f16_ft",
+        linear_weight=RowwiseQuantizationSpec(
+            dtype="float16",
+        ),
+        embedding_table=GroupQuantizationSpec(
+            dtype="float16",
+            mode="int4",
+            sym=True,
             storage_nbit=32,
             group_size=32,
             transpose=False,

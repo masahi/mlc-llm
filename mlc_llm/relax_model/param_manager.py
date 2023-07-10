@@ -356,9 +356,24 @@ class ParamManager:
                                 len(quantized_params), len(quantized_params) + n_tensor
                             )
                             # Collect the quantized tensors to return.
-                            for i in range(n_tensor):
-                                quantized_params.append(
-                                    bb.emit(relax.TupleGetItem(quantized_data, i))
+                            # for i in range(n_tensor):
+                            #     quantized_params.append(
+                            #         bb.emit(relax.TupleGetItem(quantized_data, i))
+                            #     )
+
+                            # TODO: clean
+                            packed_weight = bb.normalize(quantized_data[0])
+                            encoded_weight = relax.call_pure_packed(
+                                "cutlass.ft_preprocess_weight_int4",
+                                packed_weight,
+                                80,
+                                sinfo_args=packed_weight.struct_info,
+                            )
+                            print("encoded")
+
+                            quantized_params.append(bb.emit(encoded_weight))
+                            quantized_params.append(
+                                    bb.emit(relax.TupleGetItem(quantized_data, 1))
                                 )
                         else:
                             assert isinstance(

@@ -53,6 +53,9 @@ quantization_dict = {
     "q0f32": Quantization(
         name="q0f32", mode="no", sym=False, storage_nbit=-1, model_dtype="float32"
     ),
+    "q4f16_ft": Quantization(
+        name="q4f16_ft", mode="int4", sym=True, storage_nbit=8, model_dtype="float16"
+    ),
 }
 
 supported_model_types = set(
