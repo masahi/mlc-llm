@@ -251,17 +251,16 @@ class MossAttention(nn.Module):
             )
         )
         # Apply attention mask
+        attn_weights = nn.emit(attn_weights + attention_mask)
         attn_weights = nn.emit(
-            maximum(
-                attn_weights,
-                relax.const(
-                    tvm.tir.min_value(attn_weights.struct_info.dtype).value,
-                    attn_weights.struct_info.dtype,
+            minimum(
+                maximum(
+                    attn_weights,
+                    _min_value(attn_weights.struct_info.dtype),
                 ),
+                _max_value(attn_weights.struct_info.dtype),
             )
         )
-        attn_weights = nn.emit(relax.op.minimum(attn_weights, attention_mask))
-
         # Calculate Softmax(QK)
         if attn_weights.struct_info.dtype != "float32":
             attn_weights = astype(attn_weights, "float32")
