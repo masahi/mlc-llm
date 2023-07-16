@@ -6,7 +6,6 @@ import pickle
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import tvm
-from tvm import dlight
 from tvm import meta_schedule as ms
 from tvm import relax
 from tvm import dlight as dl
@@ -370,17 +369,7 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
             mod_deploy = dl.ApplyDefaultSchedule(dl.gpu.Matmul())(mod_deploy)
             mod_deploy = dl.ApplyDefaultSchedule(dl.gpu.DecodeGEMV())(mod_deploy)
             mod_deploy = dl.ApplyDefaultSchedule(dl.gpu.Reduction())(mod_deploy)
-            if args.target_kind == "android":
-                mod_deploy = mlc_llm.dispatch.DispatchTIROperatorAdreno()(  # pylint: disable=not-callable
-                    mod_deploy
-                )
-            mod_deploy = relax.transform.MetaScheduleApplyDatabase()(mod_deploy)
-            mod_deploy = (
-                mlc_llm.dispatch.DispatchTIROperator(  # pylint: disable=not-callable
-                    args.model_category
-                )(mod_deploy)
-            )
-            mod_deploy = dlight.ApplyDefaultSchedule(dlight.gpu.Fallback())(mod_deploy)
+            mod_deploy = dl.ApplyDefaultSchedule(dl.gpu.Fallback())(mod_deploy)
             mod_deploy = mlc_llm.transform.LiftTIRGlobalBufferAlloc()(mod_deploy)
             mod_deploy = tvm.tir.transform.ForceNarrowIndexToInt32()(mod_deploy)
 
