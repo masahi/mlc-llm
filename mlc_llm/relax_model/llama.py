@@ -926,7 +926,7 @@ def get_model(args, hf_config):
             assert len(torch_params) == 2
         else:
             raise ValueError("Unexpected param loading")
-        return np.concatenate(torch_params, axis=0)
+        return np.concatenate(torch_params, axis=0).astype(dtype)
 
     mod = param_manager.transform_module(
         mod,
