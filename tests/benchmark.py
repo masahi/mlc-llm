@@ -28,6 +28,8 @@ class Colors:
 # NOTE: "all" is currently not supported due to GPU OOM issue in creating multiple model wrappers.
 BENCHMARK_MODES = ["tvm", "torch-eager", "torch-inductor", "llama-cpp"]
 
+BATCH = 16
+
 def instrument_nvtx_range(func, name, before_run, *args):
     if before_run:
         torch.cuda.nvtx.range_push(f"{name}")
@@ -158,7 +160,7 @@ class TvmModelWrapper(ModelWrapper):
     def benchmark_core(self, num_input_tokens, num_output_tokens, skip_sampling=False):
         total_len = num_input_tokens + num_output_tokens
         tokens = (
-            torch.full((1, total_len), self.tokenizer.pad_token_id)
+            torch.full((BATCH, total_len), self.tokenizer.pad_token_id)
             .to(torch.int32)
             .to(self.torch_device)
         )
@@ -168,7 +170,9 @@ class TvmModelWrapper(ModelWrapper):
 
         for cur_pos in range(start_pos, total_len):
             if cur_pos == start_pos:
-                tok = tvm.nd.from_dlpack(tokens[:, :cur_pos])
+                t = tokens[:, :cur_pos]
+                print(t.shape)
+                tok = tvm.nd.from_dlpack(t)
                 logits = self.model(tok)
             else:
                 tok = tvm.nd.from_dlpack(next_token)

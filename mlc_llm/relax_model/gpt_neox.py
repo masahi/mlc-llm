@@ -30,6 +30,7 @@ from .modules import (
     named_parameters,
 )
 
+BATCH = 16
 
 class GPTNeoXConfig:  # pylint: disable=too-many-instance-attributes
     def __init__(
@@ -124,19 +125,32 @@ class GPTNeoXAttention(nn.Module):
             k_cache = nn.emit(
                 relax.Call(
                     f_kv_cache_append,
-                    args=[k_cache, squeeze(k, axis=0)],
+                   args=[
+                        k_cache,
+                        reshape(
+                            k, (BATCH * seq_len, self.num_heads, self.head_dim)
+                        ),
+                    ],
+                    # args=[k_cache, squeeze(k, axis=0)],
                     sinfo_args=[relax.ObjectStructInfo()],
+
                 )
             )
             v_cache = nn.emit(
                 relax.Call(
                     f_kv_cache_append,
-                    args=[v_cache, squeeze(v, axis=0)],
+                    # args=[v_cache, squeeze(v, axis=0)],
+                   args=[
+                        k_cache,
+                        reshape(
+                            k, (BATCH * seq_len, self.num_heads, self.head_dim)
+                        ),
+                    ],
                     sinfo_args=[relax.ObjectStructInfo()],
                 )
             )
             batch_size, _, num_heads, head_size = k.struct_info.shape
-            kv_cache_shape = R.shape([kv_seq_len, num_heads, head_size])
+            kv_cache_shape = R.shape([BATCH * kv_seq_len, num_heads, head_size])
             kv_states_shape = R.shape([batch_size, kv_seq_len, num_heads, head_size])
             k = nn.emit(
                 relax.Call(
@@ -445,7 +459,7 @@ class GPTNeoXForCausalLM(nn.Module):
         def _slice(x: te.Tensor):
             _, seq_len, hidden_dim = x.shape
             return te.compute(
-                shape=(1, 1, hidden_dim),
+                shape=(BATCH, 1, hidden_dim),
                 fcompute=lambda i, _, k: x[i, seq_len - 1, k],
                 name="slice",
             )
@@ -464,7 +478,7 @@ def create_encoding_func(
     bb: relax.BlockBuilder,
     config: GPTNeoXConfig,
 ) -> Dict[int, str]:
-    batch_size = tvm.tir.IntImm("int64", 1)
+    batch_size = tvm.tir.IntImm("int64", BATCH)
     seq_len = tvm.tir.Var("n", "int64")
     all_seq_len = tvm.tir.Var("m", "int64")
     pidx2pname: Dict[int, str] = {}
@@ -511,7 +525,7 @@ def create_decoding_func(
     bb: relax.BlockBuilder,
     config: GPTNeoXConfig,
 ) -> None:
-    batch_size = tvm.tir.IntImm("int64", 1)
+    batch_size = tvm.tir.IntImm("int64", BATCH)
     seq_len = tvm.tir.IntImm("int64", 1)
     all_seq_len = tvm.tir.Var("n", "int64")
     with bb.function("decode"):
@@ -553,7 +567,7 @@ def create_kv_cache_func(
 ) -> None:
     init_shape = relax.ShapeExpr(
         (
-            config.max_sequence_length,
+            BATCH * config.max_sequence_length,
             config.num_attention_heads,
             config.hidden_size // config.num_attention_heads,
         )
