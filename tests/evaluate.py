@@ -38,6 +38,7 @@ def _parse_args():
     args.add_argument("--prompt", type=str, default="The capital of Canada is")
     args.add_argument("--profile", action="store_true", default=True)
     args.add_argument("--seqlen", type=int, default=256)
+    args.add_argument("--batch-size", type=int, default=1)
     parsed = args.parse_args()
     utils.argparse_postproc_common(parsed)
     parsed.artifact_path = os.path.join(
@@ -106,14 +107,16 @@ def deploy_to_pipeline(args) -> None:
 
     seqlen = args.seqlen
     inputs = tvm.nd.array(
-            torch.full((1,seqlen), fill_value=2)
+            torch.full((args.batch_size, seqlen), fill_value=2)
             .to(torch.int32).numpy(),
             device
         )
-    first_sampled_token = tvm.nd.array(np.array([[6234]]).astype("int32"), device)
+    first_token_np = np.repeat(np.array([[6234]]).astype("int32"), args.batch_size, axis=0)
+    first_sampled_token = tvm.nd.array(first_token_np, device)
     seq_len_shape = tvm.runtime.ShapeTuple([inputs.shape[1]])
     second_seq_len_shape = tvm.runtime.ShapeTuple([inputs.shape[1] + 1])
     kv_caches = vm["create_kv_cache"]()
+    clear_kv_cache_func = tvm.get_global_func("vm.builtin.attention_kv_cache_array_clear", False)
 
     # skip warm up
     logits, kv_caches = vm["prefill"](inputs, seq_len_shape, kv_caches, const_params)
@@ -122,7 +125,8 @@ def deploy_to_pipeline(args) -> None:
     )
     device.sync()
 
-    kv_caches = vm["create_kv_cache"]()
+    clear_kv_cache_func(kv_caches)
+
     print("Running inference...")
     start = time.time()
     logits, kv_caches = vm["prefill"](inputs, seq_len_shape, kv_caches, const_params)
@@ -133,6 +137,8 @@ def deploy_to_pipeline(args) -> None:
     )
     device.sync()
     end = time.time()
+    clear_kv_cache_func(kv_caches)
+
     # fcache_view = tvm.get_global_func("vm.builtin.attention_kv_cache_view")
     # first_k_cache = fcache_view(kv_caches[0], ShapeTuple([1, seqlen+1, 32, 128]))
     # if args.debug_dump:
@@ -148,7 +154,6 @@ def deploy_to_pipeline(args) -> None:
         vm.set_instrument(cmp_instrument)
 
         print("Profiling...")
-        kv_caches = vm["create_kv_cache"]()
 
         logits, kv_caches = vm["prefill"](
             inputs, seq_len_shape, kv_caches, const_params

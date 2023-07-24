@@ -67,6 +67,7 @@ def _parse_args():
     args.add_argument("--num-measurements", type=int, default=10)
     args.add_argument("--num-input-tokens", type=int, default=32)
     args.add_argument("--num-output-tokens", type=int, default=32)
+    args.add_argument("--batch-size", type=int, default=1)
 
     parsed = args.parse_args()
     utils.argparse_postproc_common(parsed)
@@ -128,6 +129,7 @@ class TvmModelWrapper(ModelWrapper):
         dtype,
         tvm_device,
         torch_device=("cuda" if torch.cuda.is_available() else "cpu"),
+        batch_size = 1,
     ):
         super().__init__(tokenizer, max_gen_len, conv_template)
 
@@ -135,6 +137,7 @@ class TvmModelWrapper(ModelWrapper):
         self.artifact_path = artifact_path
         self.model_name = model_name
         self.dtype = dtype
+        self.batch_size = batch_size
         tvm_ex = tvm.runtime.load_module(
             f"{artifact_path}/{model_name}-{quant}-{tvm_device}.so"
         )
@@ -143,7 +146,8 @@ class TvmModelWrapper(ModelWrapper):
 
         self.const_params = utils.load_params(artifact_path, self.tvm_device)
         self.vm = tvm.relax.VirtualMachine(tvm_ex, self.tvm_device)
-        self.prep_model()
+        self.kv_cache = self.vm["create_kv_cache"]()
+        self.clear_kv_cache_func = tvm.get_global_func("vm.builtin.attention_kv_cache_array_clear", False)
 
     def sync(self):
         if self.torch_device.type == "cuda":
@@ -153,12 +157,13 @@ class TvmModelWrapper(ModelWrapper):
             self.tvm_device.sync()
 
     def prep_model(self, *args, **kwarg):
-        self.model = get_tvm_model(self.const_params, self.vm)
+        self.clear_kv_cache_func(self.kv_cache)
+        self.model = get_tvm_model(self.const_params, self.vm, self.kv_cache)
 
     def benchmark_core(self, num_input_tokens, num_output_tokens, skip_sampling=False):
         total_len = num_input_tokens + num_output_tokens
         tokens = (
-            torch.full((1, total_len), self.tokenizer.pad_token_id)
+            torch.full((self.batch_size, total_len), self.tokenizer.pad_token_id)
             .to(torch.int32)
             .to(self.torch_device)
         )
@@ -580,6 +585,7 @@ def get_model_wrapper(mode, tokenizer, ARGS):
             ARGS.quantization.model_dtype,
             tvm_device=ARGS.device_name,
             torch_device="cuda", # TODO: change to "cuda" when dlpack conversion works.
+            batch_size=ARGS.batch_size
         )
     elif mode.startswith("torch-"):
         return TorchModelWrapper(
@@ -626,13 +632,14 @@ if __name__ == "__main__":
             skip_sampling=ARGS.skip_sampling
         )
 
-        print("|{:^15}|{:^12}|{:^12}|".format("mode", "seqlen", "genlen"), end="")
+        print("|{:^15}|{:^12}|{:^12}|{:^12}|".format("mode", "batch", "seqlen", "genlen"), end="")
         for p in percentiles:
             print("{:^12}|{:^12}|".format(f"p{p}: sec", f"p{p}: tok/s"), end="")
         print("")
         print(
-            "|{:^15}|{:^12}|{:^12}|".format(
+            "|{:^15}|{:^12}|{:^12}|{:^12}|".format(
                 ARGS.benchmark_mode,
+                ARGS.batch_size,
                 num_input_tokens,
                 num_output_tokens,
             ),

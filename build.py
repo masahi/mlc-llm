@@ -85,6 +85,7 @@ def _parse_args():
             This feature is in testing stage, and will be formally replaced after \
                 massive overhaul of embedding feature for all models and use cases",
     )
+    args.add_argument("--batch-size", type=int, default=1)
 
     parsed = args.parse_args()
     assert parsed.max_seq_len == -1 or parsed.max_seq_len > 0
@@ -381,9 +382,8 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
         )
         with db, dispatch_target:
             mod_deploy = dl.ApplyDefaultSchedule(dl.gpu.Matmul())(mod_deploy)
-            mod_deploy = dl.ApplyDefaultSchedule(dl.gpu.GEMV())(mod_deploy)
+            mod_deploy = dl.ApplyDefaultSchedule(dl.gpu.DecodeGEMV())(mod_deploy)
             mod_deploy = dl.ApplyDefaultSchedule(dl.gpu.Reduction())(mod_deploy)
-            mod_deploy = dl.ApplyDefaultSchedule(dl.gpu.GeneralReduction())(mod_deploy)
             mod_deploy = dl.ApplyDefaultSchedule(dl.gpu.Fallback())(mod_deploy)
             mod_deploy = mlc_llm.transform.LiftTIRGlobalBufferAlloc()(mod_deploy)
             mod_deploy = tvm.tir.transform.ForceNarrowIndexToInt32()(mod_deploy)

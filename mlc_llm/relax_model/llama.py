@@ -279,7 +279,7 @@ class LlamaAttention(nn.Module):
         from tvm.relax.op.nn import softmax
 
         bsz, q_len, _ = hidden_states.struct_info.shape
-        assert bsz == 1, "Only support batch size 1 at this moment."
+        # assert bsz == 1, "Only support batch size 1 at this moment."
 
         if self.combine_matmul:
             # (bsz * q_len, 3 * self.num_heads * self.head_dim)
@@ -327,27 +327,38 @@ class LlamaAttention(nn.Module):
 
         kv_states_shape = key_states.struct_info.shape
         kv_states_dtype = key_states.struct_info.dtype
-        assert kv_states_shape[0] == 1  # bsz
-        kv_states_shape = R.shape(
-            [kv_states_shape[0], kv_seq_len, kv_states_shape[2], kv_states_shape[3]]
-        )
-        kv_cache_shape = R.shape([kv_seq_len, kv_states_shape[2], kv_states_shape[3]])
+        # assert kv_states_shape[0] == 1  # bsz
 
-        squeezed_key = nn.emit(squeeze(key_states, axis=0))
-        squeezed_value = nn.emit(squeeze(value_states, axis=0))
+        kv_cache_shape = R.shape([kv_seq_len, bsz * kv_states_shape[2], kv_states_shape[3]])
+        kv_states_shape = R.shape(
+            [kv_seq_len, kv_states_shape[0], kv_states_shape[2], kv_states_shape[3]]
+        )
+
         k_cache, v_cache = past_key_value
         f_kv_cache_append = relax.extern("vm.builtin.attention_kv_cache_append")
         k_cache = nn.emit(
             relax.Call(
                 f_kv_cache_append,
-                args=[k_cache, squeezed_key],
+                args=[
+                        k_cache,
+                        reshape(
+                            permute_dims(key_states, [1, 0, 2, 3]),
+                            (q_len, bsz * self.num_heads, self.head_dim)
+                        ),
+                    ],
                 sinfo_args=[relax.ObjectStructInfo()],
             )
         )
         v_cache = nn.emit(
             relax.Call(
                 f_kv_cache_append,
-                args=[v_cache, squeezed_value],
+                args=[
+                        v_cache,
+                        reshape(
+                            permute_dims(value_states, [1, 0, 2, 3]),
+                            (q_len, bsz * self.num_heads, self.head_dim)
+                        ),
+                    ],
                 sinfo_args=[relax.ObjectStructInfo()],
             )
         )
@@ -367,8 +378,8 @@ class LlamaAttention(nn.Module):
                 sinfo_args=[R.Tensor(kv_cache_shape, kv_states_dtype)],
             )
         )
-        key_states = nn.emit(reshape(k_cache, kv_states_shape))
-        value_states = nn.emit(reshape(v_cache, kv_states_shape))
+        key_states = nn.emit(permute_dims(reshape(k_cache, kv_states_shape), [1, 0, 2, 3]))
+        value_states = nn.emit(permute_dims(reshape(v_cache, kv_states_shape), [1, 0, 2, 3]))
 
         query_states = nn.emit(permute_dims(query_states, [0, 2, 1, 3]))
         key_states = nn.emit(permute_dims(key_states, [0, 2, 1, 3]))
@@ -643,8 +654,9 @@ class LlamaForCausalLM(nn.Module):
         )
 
         def te_slicing(x: te.Tensor):
+            bsz = x.shape[0]
             return te.compute(
-                shape=(1, 1, x.shape[-1]),
+                shape=(bsz, 1, x.shape[-1]),
                 fcompute=lambda i, j, k: x[i, x.shape[1] - 1, k],
                 name="slice",
             )
@@ -676,10 +688,11 @@ def create_embed_func(
     param_manager: ParamManager,
     config: LlamaConfig,
     quant_scheme: QuantizationScheme,
+    batch_size,
 ) -> None:
     func_name = "embed"
 
-    bsz = 1
+    bsz = batch_size
     seq_len = tvm.tir.Var("n", "int64")
     with bb.function(func_name):
         model = LlamaEmbedTokensWrapper(config)
@@ -705,10 +718,11 @@ def create_encoding_func(
     config: LlamaConfig,
     quant_scheme: QuantizationScheme,
     sep_embed: bool = False,
+    batch_size = 1,
 ) -> None:
     func_name = "prefill_with_embed" if sep_embed else "prefill"
 
-    bsz = 1
+    bsz = batch_size
     seq_len = tvm.tir.Var("n", "int64")
     all_seq_len = tvm.tir.Var("m", "int64")
     hidden_size = config.hidden_size
@@ -756,10 +770,11 @@ def create_decoding_func(
     param_manager: ParamManager,
     config: LlamaConfig,
     quant_scheme: QuantizationScheme,
+    batch_size,
 ) -> None:
     func_name = "decode"
 
-    bsz = 1
+    bsz = batch_size
     all_seq_len = tvm.tir.Var("n", "int64")
 
     with bb.function(func_name):
@@ -795,11 +810,11 @@ def create_decoding_func(
     bb.update_func(gv, mod[gv].with_attr("num_input", 3))
 
 
-def create_kv_cache_func(bb: relax.BlockBuilder, config: LlamaConfig) -> None:
+def create_kv_cache_func(bb: relax.BlockBuilder, config: LlamaConfig, batch_size) -> None:
     init_shape = relax.ShapeExpr(
         (
             config.max_sequence_length,
-            config.num_attention_heads,
+            batch_size * config.num_attention_heads,
             config.hidden_size // config.num_attention_heads,
         )
     )
@@ -822,10 +837,10 @@ def create_kv_cache_func(bb: relax.BlockBuilder, config: LlamaConfig) -> None:
         bb.emit_func_output(gv)
 
 
-def create_softmax_func(bb: relax.BlockBuilder, config: LlamaConfig) -> None:
+def create_softmax_func(bb: relax.BlockBuilder, config: LlamaConfig, batch_size) -> None:
     with bb.function("softmax_with_temperature"):
         logits = nn.Placeholder(
-            (1, 1, config.vocab_size), dtype="float32", name="logits"
+            (batch_size, 1, config.vocab_size), dtype="float32", name="logits"
         )
         temperature = nn.Placeholder((), dtype="float32", name="temperature")
         with bb.dataflow():
@@ -840,6 +855,7 @@ def get_model(args, hf_config):
     dtype = args.quantization.model_dtype
     max_seq_len = args.max_seq_len
     sep_embed = args.sep_embed
+    batch_size = args.batch_size
 
     config = LlamaConfig(
         **hf_config,
@@ -852,11 +868,11 @@ def get_model(args, hf_config):
     param_manager = ParamManager()
     bb = relax.BlockBuilder()
     if sep_embed:
-        create_embed_func(bb, param_manager, config, args.quantization)
-    create_encoding_func(bb, param_manager, config, args.quantization, sep_embed)
-    create_decoding_func(bb, param_manager, config, args.quantization)
-    create_kv_cache_func(bb, config)
-    create_softmax_func(bb, config)
+        create_embed_func(bb, param_manager, config, args.quantization, batch_size)
+    create_encoding_func(bb, param_manager, config, args.quantization, sep_embed, batch_size)
+    create_decoding_func(bb, param_manager, config, args.quantization, batch_size)
+    create_kv_cache_func(bb, config, batch_size)
+    create_softmax_func(bb, config, batch_size)
     create_metadata_func(
         bb,
         model_name=model_name,
