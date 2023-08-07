@@ -15,7 +15,7 @@ from mlc_llm import utils
 
 
 def _parse_args():
-    q_types = ["q4f16_1", "q4f16_0", "q0f16", "q8f16"]
+    q_types = ["q4f16_1", "q4f16_0", "q4f16_ft", "q0f16", "q8f16"]
     args = argparse.ArgumentParser()
     args.add_argument(
         "--model",

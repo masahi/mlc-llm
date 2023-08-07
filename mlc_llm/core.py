@@ -53,6 +53,10 @@ class BuildArgs:
             "choices": [*utils.quantization_schemes.keys()],
         },
     )
+    batch_size: int = field(
+        default=1,
+        metadata={"help": "The batch size in both prefill and decoder."},
+    )
     max_seq_len: int = field(
         default=-1,
         metadata={"help": "The maximum allowed sequence length for the model."},

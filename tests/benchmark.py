@@ -73,7 +73,7 @@ def instrument_nvtx_range(func, name, before_run, *args):
 
 def _parse_args():
     args = argparse.ArgumentParser()
-    q_types = ["q4f16_1", "q4f16_0", "q0f16", "q8f16"]
+    q_types = ["q4f16_1", "q4f16_0", "q4f16_ft", "q0f16", "q8f16"]
     args.add_argument(
         "--model",
         type=str,
