@@ -10,6 +10,9 @@ from tvm.script import tir as T
 from mlc_llm import utils
 
 
+artifact_path = "dist/vicuna-v1-7b-q4f16_ft/"
+
+
 def build():
     @I.ir_module
     class Module:
@@ -58,6 +61,7 @@ def build():
             x: R.Tensor(("num_tokens", 4096), dtype="float16"),
             weight: R.Tensor((4096, 2048), dtype="int8"),
             scales: R.Tensor((4096,), dtype="float16"),
+            residual: R.Tensor(("num_tokens", 4096), dtype="float16"),
         ) -> R.Tensor(("num_tokens", 4096), dtype="float16"):
             R.func_attr({"num_input": 3})
             cls = Module
@@ -69,8 +73,9 @@ def build():
                 lv1_1: R.Tensor((num_tokens, 4096), dtype="float16") = R.matmul(
                     x, lv6, out_dtype="float16"
                 )
-                R.output(lv1_1)
-            return lv1_1
+                out = R.add(lv1_1, residual)
+                R.output(out)
+            return out
 
     mod = partition_for_cutlass(Module)
 
@@ -81,11 +86,10 @@ def build():
 
     ex = relax.build(mod, target="cuda")
 
-    ex.export_library("llama_qkv_ft.so")
+    ex.export_library(artifact_path + "llama_qkv_ft.so")
 
 
 def test():
-    artifact_path = "dist/vicuna-v1-7b-q4f16_ft/"
     tvm_ex = tvm.runtime.load_module(artifact_path + "llama_qkv_ft.so")
     dev = tvm.device("cuda", 0)
     vm = relax.VirtualMachine(tvm_ex, dev)
@@ -109,7 +113,7 @@ def test():
 
         out = vm["main_qkv"](inp, weight_qkv, scale_qkv).numpy()
         print(out)
-        out = vm["main_o_proj"](inp, weight_o_proj, scale_o_proj).numpy()
+        out = vm["main_o_proj"](inp, weight_o_proj, scale_o_proj, inp).numpy()
         print(out)
 
 test()
