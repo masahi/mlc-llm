@@ -426,6 +426,7 @@ def create_evaluate_func(
     bb: relax.BlockBuilder,
     param_manager: ParamManager,
     config: LlamaConfig,
+    cpu_dev,
     quant_scheme: QuantizationScheme,
     sep_embed: bool = False,
 ) -> None:
@@ -434,7 +435,6 @@ def create_evaluate_func(
     num_token = tvm.tir.Var("num_token", "int64")
     num_seq = tvm.tir.Var("num_seq", "int64")
 
-    cpu_dev = VDevice("llvm", 0, "global")
 
     with bb.function(func_name):
         model = LlamaForCausalLM(config, cpu_dev, tvm.tir.Var("vocab_size", "int64"), sep_embed)
@@ -465,13 +465,13 @@ def create_evaluate_func(
     mod = bb.get()
     gv = mod.get_global_var(func_name)
     bb.update_func(gv, mod[gv].with_attr("num_input", 3))
-    bb.get().update_global_info("vdevice", [cpu_dev])
 
 
 def create_encoding_func(
     bb: relax.BlockBuilder,
     param_manager: ParamManager,
     config: LlamaConfig,
+    cpu_dev,
     quant_scheme: QuantizationScheme,
     sep_embed: bool = False,
 ) -> None:
@@ -481,8 +481,6 @@ def create_encoding_func(
     num_seq = tvm.tir.Var("num_seq", "int64")
 
     num_inputs = 5
-
-    cpu_dev = VDevice("llvm", 0, "global")
 
     with bb.function(func_name):
         model = LlamaForCausalLM(config, cpu_dev, tvm.tir.Var("vocab_size", "int64"), sep_embed)
@@ -532,21 +530,19 @@ def create_encoding_func(
     mod = bb.get()
     gv = mod.get_global_var(func_name)
     bb.update_func(gv, mod[gv].with_attr("num_input", num_inputs))
-    bb.get().update_global_info("vdevice", [cpu_dev])
 
 
 def create_decoding_func(
     bb: relax.BlockBuilder,
     param_manager: ParamManager,
     config: LlamaConfig,
+    cpu_dev,
     quant_scheme: QuantizationScheme,
 ) -> None:
     func_name = "decode"
 
     num_seq = tvm.tir.Var("num_seq", "int64")
     max_num_blocks_per_seq = tvm.tir.Var("max_num_blocks_per_seq", "int64")
-
-    cpu_dev = VDevice("llvm", 0, "global")
 
     with bb.function(func_name):
         inputs, positions, seq_lens, past_key_values, slot_mapping, block_tables = get_inputs(
@@ -574,7 +570,6 @@ def create_decoding_func(
     mod = bb.get()
     gv = mod.get_global_var(func_name)
     bb.update_func(gv, mod[gv].with_attr("num_input", 6))
-    bb.get().update_global_info("vdevice", [cpu_dev])
 
 
 def get_model(args, hf_config):
@@ -604,9 +599,12 @@ def get_model(args, hf_config):
     param_manager = ParamManager()
     bb = relax.BlockBuilder()
 
-    create_evaluate_func(bb, param_manager, config, args.quantization, sep_embed)
-    create_encoding_func(bb, param_manager, config, args.quantization, sep_embed)
-    create_decoding_func(bb, param_manager, config, args.quantization)
+    cpu_dev = VDevice("llvm", 0, "global")
+
+    create_evaluate_func(bb, param_manager, config, cpu_dev, args.quantization, sep_embed)
+    create_encoding_func(bb, param_manager, config, cpu_dev, args.quantization, sep_embed)
+    create_decoding_func(bb, param_manager, config, cpu_dev, args.quantization)
+    bb.get().update_global_info("vdevice", [cpu_dev])
 
     mod = bb.get()
 
