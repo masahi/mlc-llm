@@ -11,11 +11,19 @@ from typing import Callable, Optional, Union, Any, Dict, Deque, List
 import structlog
 
 from .base import FinishReason, RequestId, RequestState, ValidationError
-from .model_module import DecodeRequest, ModelModule, PrefillRequest, SequenceId, TextGenerator, Tokenizer as TokenizerP
+from .model_module import (
+    DecodeRequest,
+    ModelModule,
+    PrefillRequest,
+    SequenceId,
+    TextGenerator,
+    Tokenizer as TokenizerP,
+)
 from ..model.base import ModelArtifactConfig
 from ..logging_utils import configure_logging
 
 LOG = structlog.stdlib.get_logger(__name__)
+
 
 @dataclass
 class ShutdownCommand:
@@ -73,7 +81,6 @@ class GenerationLoopWorker:
     stopped_requests: List[RequestState]
     current_batch: Dict[RequestId, RequestState]
 
-
     def __init__(
         self,
         model_module: ModelModule,
@@ -121,7 +128,6 @@ class GenerationLoopWorker:
 
             self.queue.extend(valid_states)
             self.has_new_requests.notify_all()
-
 
     def _cacnel_or_stop_request(
         self, request_id: RequestId, requests: list[RequestState]
@@ -213,22 +219,11 @@ class GenerationLoopWorker:
 
         self.cancelled_requests.clear()
 
-        self._adjust_batch()
+        hung_request_ids = self._adjust_batch()
 
         if not self.current_batch:
-            if len(self.queue) > 0:
-                LOG.warn(
-                     f"The engine has {len(self.queue)} requests to be processed in the queue, but none of them were added to the current batch during the execution of StagingEngine._adjust_batch"
-                )
-
-                hung_request_ids = []
-
-                for state in self.queue:
-                    hung_request_ids.append(state.request_id)
-                    state.validation_err = ValidationError("Canceled due to a hang")
-
-                for request_id in hung_request_ids:
-                    self.cancel_request(request_id)
+            for request_id in hung_request_ids:
+                self.cancel_request(request_id)
 
             return result
 
@@ -292,7 +287,7 @@ class GenerationLoopWorker:
                     "Skip growing the batch due to max_decode_steps. Decode steps: %s",
                     self.cache_manager.get_max_new_tokens(),
                 )
-                return
+                return []
 
             num_new_batched_tokens = len(self.current_batch)
             while self.queue:
@@ -327,6 +322,25 @@ class GenerationLoopWorker:
                 self.queue.popleft()
                 self.cache_manager.allocate(state.request_id, num_tokens)
                 self.current_batch[state.request_id] = state
+
+            if not self.current_batch:
+                if len(self.queue) > 0:
+                    LOG.warn(
+                        f"The engine has {len(self.queue)} requests to be processed in the queue, but"
+                        " none of them were added to the current batch during the execution of"
+                        " StagingEngine._adjust_batch"
+                    )
+
+                    hung_request_ids = []
+
+                    for state in self.queue:
+                        hung_request_ids.append(state.request_id)
+                        # TODO(masahi): Proper error enum?
+                        state.validation_err = ValidationError("Canceled due to a hang")
+
+                    return hung_request_ids
+
+            return []
 
     def _remove_request_from_batch(self, request_id: RequestId):
         del self.current_batch[request_id]
@@ -399,10 +413,9 @@ def run_generation_loop_worker(
     result_queue: multiprocessing.Queue,
     ready_event: multiprocessing.Event,
     contextvars: Dict[str, Any] = None,
-    enable_json_logs = False,
+    enable_json_logs=False,
     log_level="INFO",
 ):
-
     configure_logging(enable_json_logs, log_level)
     structlog.contextvars.bind_contextvars(**contextvars)
 
