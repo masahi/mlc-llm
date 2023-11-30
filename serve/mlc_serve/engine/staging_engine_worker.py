@@ -219,12 +219,12 @@ class GenerationLoopWorker:
 
         self.cancelled_requests.clear()
 
-        hung_request_ids = self._adjust_batch()
+        request_ids_to_cancel = self._adjust_batch()
+
+        for request_id in request_ids_to_cancel:
+            self.cancel_request(request_id)
 
         if not self.current_batch:
-            for request_id in hung_request_ids:
-                self.cancel_request(request_id)
-
             return result
 
         requests = self._get_requests_to_process()
@@ -269,7 +269,8 @@ class GenerationLoopWorker:
 
         return result
 
-    def _adjust_batch(self):
+    def _adjust_batch(self) -> List[RequestId]:
+        """Form a new batch and return a list of request IDs that should be cancelled, if any."""
         with self.queue_lock:
             while self.cache_manager.get_max_new_tokens() < 1:
                 request_to_remove = min(
