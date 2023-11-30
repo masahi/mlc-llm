@@ -10,7 +10,7 @@ from typing import Callable, Optional, Union, Any, Dict, Deque, List
 
 import structlog
 
-from .base import FinishReason, RequestId, RequestState
+from .base import FinishReason, RequestId, RequestState, ValidationError
 from .model_module import DecodeRequest, ModelModule, PrefillRequest, SequenceId, TextGenerator, Tokenizer as TokenizerP
 from ..model.base import ModelArtifactConfig
 from ..logging_utils import configure_logging
@@ -220,6 +220,16 @@ class GenerationLoopWorker:
                 LOG.warn(
                      f"The engine has {len(self.queue)} requests to be processed in the queue, but none of them were added to the current batch during the execution of StagingEngine._adjust_batch"
                 )
+
+                hung_request_ids = []
+
+                for state in self.queue:
+                    hung_request_ids.append(state.request_id)
+                    state.validation_err = ValidationError("Canceled due to a hang")
+
+                for request_id in hung_request_ids:
+                    self.cancel_request(request_id)
+
             return result
 
         requests = self._get_requests_to_process()
