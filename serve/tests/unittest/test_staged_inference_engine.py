@@ -320,3 +320,8 @@ def test_big_prompt_fit_to_cache_staging():
 
     assert len(finished) == 1
     assert return_token_step >= 5
+
+
+if __name__ == '__main__':
+    test_cache_evict_hang_staging()
+    # test_big_prompt_fit_to_cache_staging()

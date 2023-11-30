@@ -64,6 +64,7 @@ def create_engine(
         "max_input_len": args.max_input_len,
         "min_decode_steps": args.min_decode_steps,
         "max_decode_steps": args.max_decode_steps,
+        "prompt_allocate_ratio": args.prompt_allocate_ratio
     })
 
     if args.use_staging_engine:
