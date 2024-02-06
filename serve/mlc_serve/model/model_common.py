@@ -414,6 +414,7 @@ def prepare_inputs(
     sliding_window,
     is_prefill,
     for_vllm=False,
+    pt_device="cuda",
 ):
     if for_vllm:
         torch_int_dtype = torch.long
@@ -491,7 +492,7 @@ def prepare_inputs(
         slot_mapping = _do_pad(slot_mapping, max_prompt_len, -1)
 
     def to_torch(arr, torch_dtype):
-        return torch.tensor(arr, dtype=torch_dtype, device="cuda")
+        return torch.tensor(arr, dtype=torch_dtype, device=pt_device)
 
     input_ids = to_torch(input_ids, torch_int_dtype)
     positions = to_torch(positions, torch_int_dtype)

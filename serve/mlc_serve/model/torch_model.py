@@ -36,12 +36,13 @@ from .model_common import (
     prepare_inputs,
     get_num_cache_blocks,
     get_logprob_infos,
+    sample,
     sample_from_logits,
+    update_tokens_frequency,
+    append_text_gen_res,
 )
 
 from ..engine import (
-    SequenceId,
-    PROMPT_SEQEUNCE_INDEX,
     get_prompt_sequence_id,
     MLCServeEngineConfig,
 )
@@ -186,6 +187,140 @@ def load_model(hf_config, model_path):
         return model
 
 
+def get_inputs_for_rpc(
+    requests: Sequence[Union[PrefillRequest, DecodeRequest]],
+    cache_info: KVCacheInfo,
+    sliding_window,
+):
+    is_prefill = isinstance(requests[0], PrefillRequest)
+
+    all_token_ids = []
+    sequence_ids = []
+    prompt_lens = []
+
+    for request in requests:
+        if isinstance(request, PrefillRequest):
+            sequence_ids.append(get_prompt_sequence_id(request.request_id))
+            prompt_lens.append(len(request.token_ids))
+        else:
+            sequence_ids.append(request.sequence_id)
+            prompt_lens.append(request.prompt_token_counts)
+
+        all_token_ids.append(request.token_ids)
+
+    (
+        input_ids,
+        positions,
+        seq_lens,
+        slot_mapping,
+        _,
+        block_tables,
+    ) = prepare_inputs(
+        sequence_ids,
+        all_token_ids,
+        prompt_lens,
+        cache_info.slot_mappings,
+        cache_info.decode_block_tables,
+        sliding_window,
+        is_prefill,
+        for_vllm=True,
+        pt_device="cpu",
+    )
+
+    return (
+        input_ids,
+        positions,
+        seq_lens,
+        slot_mapping,
+        block_tables,
+        prompt_lens,
+        sequence_ids,
+    )
+
+
+def generate_rpc(
+    input_ids,
+    positions,
+    seq_lens,
+    slot_mapping,
+    block_tables,
+    prompt_lens,
+    sampling_params,
+    pt_model,
+    cache_blocks,
+    vocab_size,
+):
+    is_prefill = block_tables is None
+    input_shape = input_ids.shape
+
+    if block_tables is None:
+        torch.cuda.nvtx.range_push(f"forward prefill {input_shape}")
+        block_tables = torch.cuda.IntTensor([])
+        context_lens = torch.cuda.IntTensor([])
+        max_context_len = 0
+    else:
+        torch.cuda.nvtx.range_push(f"forward decode {input_shape}")
+        context_lens = seq_lens
+        max_context_len = torch.max(seq_lens)
+        prompt_lens = []
+
+    selected_token_indices: List[int] = []
+
+    if is_prefill:
+        max_prompt_len = max(prompt_lens)
+        seq_start = 0
+
+        for prompt_len in prompt_lens:
+            selected_token_indices.append(seq_start + prompt_len - 1)
+            seq_start += max_prompt_len
+
+    prompt_lens = torch.cuda.LongTensor(prompt_lens)
+
+    input_metadata = InputMetadata(
+        is_prompt=is_prefill,
+        slot_mapping=slot_mapping,
+        prompt_lens=prompt_lens,
+        max_seq_len=None,
+        start_loc=None,
+        max_context_len=max_context_len,
+        context_lens=context_lens,
+        block_tables=block_tables,
+        use_cuda_graph=False,
+    )
+
+    sampling_metadata = SamplingMetadata(
+        seq_groups=None,
+        seq_data=None,
+        prompt_lens=prompt_lens,
+        selected_token_indices=torch.tensor(
+            selected_token_indices, dtype=torch.long, device="cuda"
+        ),
+        categorized_sample_indices=None,
+    )
+
+    with torch.no_grad():
+        t1 = time.time()
+        hidden_states = pt_model.model(
+            input_ids,
+            positions,
+            cache_blocks,
+            input_metadata,
+        )
+
+        logits = get_logits(
+            pt_model.lm_head.weight,
+            hidden_states,
+            sampling_metadata,
+            vocab_size,
+        )
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
+        t2 = time.time()
+        print("Model inference done in ", (t2 - t1) * 1e3, os.getpid(), flush=True)
+
+    return sample(logits, sampling_params, vocab_size)
+
+
 def generate(
     requests: Sequence[Union[PrefillRequest, DecodeRequest]],
     cache_info: KVCacheInfo,
@@ -194,20 +329,15 @@ def generate(
     sliding_window,
     vocab_size,
 ) -> List[TextGenerationResult]:
-    if len(requests) == 0:
-        return []
-
     is_prefill = isinstance(requests[0], PrefillRequest)
 
     all_token_ids = []
     sequence_ids = []
     prompt_lens = []
-    num_sequences = []
 
     for request in requests:
         if isinstance(request, PrefillRequest):
             sequence_ids.append(get_prompt_sequence_id(request.request_id))
-            num_sequences.append(request.num_sequence)
             prompt_lens.append(len(request.token_ids))
         else:
             sequence_ids.append(request.sequence_id)
@@ -285,6 +415,7 @@ def generate(
     )
 
     with torch.no_grad():
+        t1 = time.time()
         hidden_states = pt_model.model(
             input_ids,
             positions,
@@ -298,9 +429,10 @@ def generate(
             sampling_metadata,
             vocab_size,
         )
-
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
+        t2 = time.time()
+        print("Model inference done in ", (t2 - t1) * 1e3, os.getpid(), flush=True)
 
     return sample_from_logits(logits, sequence_ids, requests, vocab_size)
 
@@ -356,21 +488,52 @@ class ModelRpcServer(rpyc.Service):
 
         return num_blocks
 
-    def exposed_generate(
+    def exposed_generate_rpc(
         self,
-        requests: Sequence[Union[PrefillRequest, DecodeRequest]],
-        cache: KVCacheInfo,
-    ) -> List[TextGenerationResult]:
+        input_ids,
+        positions,
+        seq_lens,
+        slot_mapping,
+        block_tables,
+        prompt_lens,
+        sampling_params,
+    ):
+        t1 = time.time()
+        print("Obtain input", os.getpid())
         torch.cuda.nvtx.range_push(f"Obtain input")
-        requests = obtain(requests)
-        cache = obtain(cache)
+        input_ids = obtain(input_ids)
+        positions = obtain(positions)
+        seq_lens = obtain(seq_lens)
+        slot_mapping = obtain(slot_mapping)
+        block_tables = obtain(block_tables)
+        prompt_lens = obtain(prompt_lens)
+        sampling_params = obtain(sampling_params)
         torch.cuda.nvtx.range_pop()
-        return generate(
-            requests,
-            cache,
+        # print("Obtain input done", (time.time() - t1) * 1e3, os.getpid())
+
+        torch.cuda.nvtx.range_push(f"Copy inputs to cuda")
+
+        input_ids = input_ids.to("cuda")
+        positions = positions.to("cuda")
+        seq_lens = seq_lens.to("cuda")
+        slot_mapping = slot_mapping.to("cuda")
+
+        if block_tables is not None:
+            block_tables = block_tables.to("cuda")
+
+        torch.cuda.nvtx.range_pop()
+        # print("Copy inputs to cuda done", (time.time() - t1) * 1e3, os.getpid())
+
+        return generate_rpc(
+            input_ids,
+            positions,
+            seq_lens,
+            slot_mapping,
+            block_tables,
+            prompt_lens,
+            sampling_params,
             self.pt_model,
             self.cache_blocks,
-            self.sliding_window,
             self.vocab_size,
         )
 
@@ -399,7 +562,9 @@ def start_model_process(socket_path):
 
     while repeat_count < 20:
         try:
-            con = unix_connect(socket_path, config={"allow_pickle": True, "sync_request_timeout": 600})
+            con = unix_connect(
+                socket_path, config={"allow_pickle": True, "sync_request_timeout": 600}
+            )
             break
         except FileNotFoundError:
             time.sleep(1)
@@ -454,12 +619,48 @@ class ModelRpcClient:
         requests: Sequence[Union[PrefillRequest, DecodeRequest]],
         cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
+        (
+            input_ids,
+            positions,
+            seq_lens,
+            slot_mapping,
+            block_tables,
+            prompt_lens,
+            sequence_ids,
+        ) = get_inputs_for_rpc(requests, cache, None)
+
+        sampling_params = [req.sampling_params for req in requests]
+
         def _generate(i):
-            # This calls ModelRpcServer.exposed_generate(...) via RPC.
-            return self.model_servers[i].generate(requests, cache)
+            # This calls ModelRpcServer.exposed_generate_rpc(...) via RPC.
+            return self.model_servers[i].generate_rpc(
+                input_ids,
+                positions,
+                seq_lens,
+                slot_mapping,
+                block_tables,
+                prompt_lens,
+                sampling_params,
+            )
 
         res = [obtain(x) for x in self.executor.map(_generate, range(self.num_shards))]
-        return res[0]
+        next_tokens, logprob_infos = res[0]
+
+        assert next_tokens is not None
+
+        outputs: List[TextGenerationResult] = []
+
+        for i, (sequence_id, new_token) in enumerate(zip(sequence_ids, next_tokens)):
+            update_tokens_frequency(requests[i], new_token)
+            outputs = append_text_gen_res(
+                outputs,
+                requests[i],
+                [new_token],
+                sequence_id,
+                get_logprob_infos(i, logprob_infos),
+            )
+
+        return outputs
 
 
 # Taken from sgl-project/sglang
@@ -521,8 +722,13 @@ class Model:
         requests: Sequence[Union[PrefillRequest, DecodeRequest]],
         cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
+        if len(requests) == 0:
+            return []
+
         if self.model_rpc is None:
-            return generate(
+            t1 = time.time()
+            print("Running generate", flush=True)
+            ret = generate(
                 requests,
                 cache,
                 self.pt_model,
@@ -530,8 +736,16 @@ class Model:
                 self.sliding_window,
                 self.vocab_size,
             )
+            t2 = time.time()
+            print("Done", (t2 - t1) * 1e3, flush=True)
+            return ret
 
-        return self.model_rpc.generate(requests, cache)
+        t1 = time.time()
+        print("Running generate", os.getpid(), flush=True)
+        ret = self.model_rpc.generate(requests, cache)
+        t2 = time.time()
+        print("Done", (t2 - t1) * 1e3, flush=True)
+        return ret
 
 
 def init_torch_model(
