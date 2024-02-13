@@ -72,7 +72,7 @@ def get_tvm_model(config, dev):
 
     if config.num_shards == 1:
         ex = tvm.runtime.load_module(lib_path)
-        vm = relax.VirtualMachine(ex, dev)
+        vm = relax.VirtualMachine(ex, dev, memory_cfg="rapid")
 
         from tvm.contrib import tvmjs  # pylint: disable=import-outside-toplevel
 
@@ -211,6 +211,8 @@ class Model:
         param_bytes = sum(
             math.prod(param.shape) * np.dtype(param.dtype).itemsize for param in params
         )
+
+        print("peak", peak_memory + param_bytes)
 
         return peak_memory + param_bytes
 
