@@ -36,11 +36,11 @@ from .sampler import SamplingState
 LOG = structlog.stdlib.get_logger(__name__)
 
 
-def load_disco_module(artifact_path, lib_path, num_shards):
+def load_disco_module(artifact_path, lib_path, num_shards, alloc_type):
     sess = di.ProcessSession(num_workers=num_shards, entrypoint="tvm.exec.disco_worker")
     devices = range(num_shards)
     sess.init_ccl("nccl", *devices)
-    module = sess.load_vm_module(lib_path)
+    module = sess.load_vm_module(lib_path, alloc_type=alloc_type)
 
     loader_create = sess.get_global_func("runtime.disco.ShardLoader")
     metadata_path = os.path.join(artifact_path, "params", "ndarray-cache.json")
@@ -55,13 +55,13 @@ def load_disco_module(artifact_path, lib_path, num_shards):
 
 
 def copy_to_worker_0(sess: di.Session, host_array):
-    x_array = sess.empty(host_array.shape, host_array.dtype)
+    x_array = sess.empty(host_array.shape, host_array.dtype, alloc_type="rapid")
     sess.copy_to_worker_0(host_array, x_array)
     return x_array
 
 
 def broadcast_from_worker_0(sess: di.Session, src, shape, dtype):
-    dst = sess.empty(shape, dtype)
+    dst = sess.empty(shape, dtype, alloc_type="rapid")
     sess.broadcast_from_worker0(src, dst)
     return dst
 
@@ -69,10 +69,11 @@ def broadcast_from_worker_0(sess: di.Session, src, shape, dtype):
 def get_tvm_model(config, dev):
     LOG.info(f"Loading parameters from {config.model_artifact_path}.")
     lib_path = os.path.join(config.model_artifact_path, config.library_name)
+    alloc_type = "rapid"
 
     if config.num_shards == 1:
         ex = tvm.runtime.load_module(lib_path)
-        vm = relax.VirtualMachine(ex, dev)
+        vm = relax.VirtualMachine(ex, dev, memory_cfg=alloc_type)
 
         from tvm.contrib import tvmjs  # pylint: disable=import-outside-toplevel
 
@@ -95,7 +96,7 @@ def get_tvm_model(config, dev):
 
         return vm.module, params, None
 
-    return load_disco_module(config.model_artifact_path, lib_path, config.num_shards)
+    return load_disco_module(config.model_artifact_path, lib_path, config.num_shards, alloc_type)
 
 
 def _prepare_inputs(
