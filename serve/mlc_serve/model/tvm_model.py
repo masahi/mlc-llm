@@ -159,9 +159,7 @@ class Model:
         self.num_shards = config.num_shards
 
         # TODO(@sunggg): Find a better way
-        if config.model_type == "llama":
-            self.torch_dtype = torch.float32
-        elif config.model_type == "mistral" or config.model_type == "mixtral":
+        if config.model_type in ["llama", "mistral", "mixtral", "gemma"]:
             self.torch_dtype = torch.float32
         else:
             assert 0, f"{config.model_type} is NOT supported yet"
