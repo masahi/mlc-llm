@@ -57,4 +57,9 @@ def get_model_artifact_config(model_artifact_path):
     if not "paged_kv_cache_type" in json_object:
         json_object["paged_kv_cache_type"] = "vllm"
 
-    return ModelArtifactConfig._from_json(json_object)
+    config = ModelArtifactConfig._from_json(json_object)
+
+    if config.head_dim is None:
+        config.head_dim = config.hidden_size // config.num_attention_heads
+
+    return config
